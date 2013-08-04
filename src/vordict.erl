@@ -7,7 +7,7 @@
 
 -export([new/0, store/3, remove/2, merge/2, value/1]).  %from_list/1, gc/1 ]).
 
--record(vordict, {adds :: vgset:vgset(),
+-record(vordict, {stores :: orddict:orddict(),
                  removes :: vgset:vgset()}).
 
 -opaque vordict() :: #vordict{}.
@@ -25,7 +25,7 @@
 %%--------------------------------------------------------------------
 -spec new() -> vordict().
 new() ->
-    #vordict{adds = vgset:new(),
+    #vordict{stores = orddict:new(),
             removes = vgset:new()}.
 
 %%--------------------------------------------------------------------
@@ -47,8 +47,10 @@ new() ->
 %% @end
 %%--------------------------------------------------------------------
 -spec store(Key::term(), Value::term(), ORDict::vordict()) -> ORDict1::vordict().
-store(Key, _Value, ORDict = #vordict{adds = Adds}) ->
-    ORDict#vordict{adds = vgset:add({Key, ecrdt:id()}, Adds)}.
+store(Key, Value, ORDict = #vordict{stores = Stores}) ->
+    ORDict#vordict{stores = orddict:update(Key, fun(Value1) ->
+                                                  ecrdt:merge(Value1, vlwwregister:new(Value))
+                                                end, vlwwregister:new(Value), Stores)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -58,11 +60,7 @@ store(Key, _Value, ORDict = #vordict{adds = Adds}) ->
 %%--------------------------------------------------------------------
 -spec remove(Key::term(), ORDict::vordict()) -> ORDict1::vordict().
 remove(Key, ORDict = #vordict{removes = Removes}) ->
-    CurrentExisting = [Elem || Elem = {E1, _} <- raw_value(ORDict), E1 =:= Key],
-    Removes1 = lists:foldl(fun(R, Rs) ->
-                                  vgset:add(R, Rs)
-                          end, Removes, CurrentExisting),
-    ORDict#vordict{removes = Removes1}.
+    ORDict#vordict{removes = vgset:add(Key, Removes)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -70,11 +68,13 @@ remove(Key, ORDict = #vordict{removes = Removes}) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec merge(ORDict0::vordict(), ORDict1::vordict()) -> ORDictM::vordict().
-merge(#vordict{adds = Adds0,
+merge(#vordict{stores = Stores0,
              removes = Removes0},
-      #vordict{adds = Adds1,
+      #vordict{stores = Stores1,
              removes = Removes1}) ->
-    #vordict{adds = vgset:merge(Adds0, Adds1),
+    #vordict{stores = orddict:merge(fun(_Key, Value1, Value2) ->
+                                      ecrdt:merge(Value1, Value2)
+                                    end, Stores0, Stores1),
            removes = vgset:merge(Removes0, Removes1)}.
 
 %%--------------------------------------------------------------------
@@ -85,7 +85,7 @@ merge(#vordict{adds = Adds0,
 %%--------------------------------------------------------------------
 -spec value(ORDict::vordict()) -> [Element::term()].
 value(ORDict) ->
-    ordsets:from_list([E || {E, _} <- raw_value(ORDict)]).
+    ordsets:from_list([ecrdt:value(E) || E <- raw_value(ORDict)]).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -105,10 +105,13 @@ value(ORDict) ->
 %%% Internal functions
 %%%===================================================================
 
--spec raw_value(ORDict::vordict()) -> orddict:orddict().
-raw_value(#vordict{adds = Adds,
+-spec raw_value(ORDict::vordict()) -> [Element::vlwwregister:vlwwregister()].
+raw_value(#vordict{stores = Stores,
                  removes = Removes}) ->
-    ordsets:subtract(vgset:value(Adds), vgset:value(Removes)).
+    RemovesRaw = vgset:value(Removes),
+    orddict:filter(fun(K, _V) ->
+                     not lists:member(K, RemovesRaw)
+                   end, Stores).
 
 %%%===================================================================
 %%% Tests
@@ -140,7 +143,7 @@ apply_ops(Ops) ->
 
 %% A list of opperations and targets.
 targets() ->
-    list({oneof([a, b, ab]), oneof([store, remove]), pos_integer(), pos_integer()}).
+    list({oneof([a, b, ab]), oneof([store, remove]), atom(), pos_integer()}).
 
 prop_vordict() ->
     ?FORALL(Ts,  targets(),
